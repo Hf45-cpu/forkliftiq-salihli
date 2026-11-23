@@ -2,12 +2,12 @@
 import json, subprocess, numpy as np, librosa, soundfile as sf
 from scipy import signal
 P = "/tmp/claude-0/-home-user-forkliftiq-salihli/2dc5a21c-e011-5b01-b859-14ffbfbdb788/scratchpad"
-OUT = f"{P}/proj3"; TTS = f"{P}/tts/out"
+OUT = f"{P}/proj3"; TTS = f"{P}/tts/out2"
 SR = 44100
 L = json.load(open(f"{OUT}/narration.json")); TL = json.load(open(f"{OUT}/timeline.json"))
 N = int(TL["total"] * SR); vo = np.zeros(N)
 starts = [l["start"] for l in L]
-starts[0] = 0.3; starts[8] = 49.1
+starts[0] = 0.2; starts[1] = 5.45; starts[8] = 49.1
 limits = []
 for i, l in enumerate(L):
     end = starts[i + 1] - 0.12 if i + 1 < len(L) else TL["total"] - 0.3
