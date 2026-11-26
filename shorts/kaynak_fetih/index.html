@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Cap;src:url(/fonts/DejaVuSans-Bold.ttf)}
+@font-face{font-family:Ser;src:url(/fonts/DejaVuSerif-Bold.ttf)}
+html,body{margin:0;background:#000;overflow:hidden}
+#wrap{position:relative;width:1080px;height:1920px}
+canvas{display:block}
+#ov{position:absolute;inset:0;pointer-events:none}
+#date{position:absolute;left:0;right:0;top:250px;text-align:center;font-family:Ser;font-size:64px;color:#f3e2b3;letter-spacing:4px;
+ text-shadow:0 4px 0 rgba(0,0,0,.6),0 0 30px rgba(0,0,0,.8)}
+#date small{display:block;font-family:Cap;font-size:30px;letter-spacing:8px;color:#e8c46a;margin-top:6px}
+#cap{position:absolute;left:50px;right:50px;top:1230px;text-align:center;font-family:Cap;font-size:72px;line-height:1.15;color:#fff;
+ -webkit-text-stroke:12px #000;paint-order:stroke fill;text-shadow:0 8px 0 rgba(0,0,0,.5)}
+#cap .hl{color:#ffcf4a}
+#cap div{display:inline-block;transform-origin:center bottom}
+#cap.title{top:760px;font-family:Ser;font-size:230px;-webkit-text-stroke:16px #000;color:#f3e2b3}
+#legend{position:absolute;left:60px;top:1610px;font-family:Cap;font-size:34px;color:#fff;text-shadow:0 3px 6px #000;opacity:0;line-height:1.5}
+#legend i{display:inline-block;width:26px;height:26px;border-radius:50%;margin-right:14px;vertical-align:-3px}
+#counter{position:absolute;right:50px;top:420px;text-align:right;font-family:Cap;color:#fff;opacity:0;text-shadow:0 4px 10px #000}
+#counter .n{font-size:84px}
+#counter .r{color:#ff4b3e}
+#counter .b{color:#ffd23f}
+#counter .s{font-size:30px;color:#ddd}
+#scale{position:absolute;left:60px;top:1560px;font-family:Cap;font-size:28px;color:#fff;opacity:0;text-shadow:0 2px 4px #000}
+#scale div{height:10px;border:4px solid #fff;border-top:0;margin-top:6px}
+#src{position:absolute;left:0;right:0;bottom:250px;text-align:center;font-family:Cap;font-size:26px;color:#ddd;opacity:0;text-shadow:0 2px 4px #000}
+#flash{position:absolute;inset:0;background:#fff;opacity:0}
+</style></head>
+<body><div id="wrap"><div id="ov">
+ <div id="date"></div>
+ <div id="counter"></div>
+ <div id="legend"><div><i style="background:#ff4b3e"></i>OSMANLI</div><div><i style="background:#ffd23f"></i>SAVUNMA</div><div style="font-size:28px;color:#ddd">1 NOKTA = 1 ASKER</div></div>
+ <div id="scale">1 KM<div></div></div>
+ <div id="cap"><div></div></div>
+ <div id="src">Kaynak: Wikipedia — Runciman (1965), Nicolle (2000) vd. · Arazi: gerçek yükseklik verisi</div>
+ <div id="flash"></div>
+</div></div>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import * as BGU from 'three/addons/utils/BufferGeometryUtils.js';
+
+await document.fonts.load('72px Cap'); await document.fonts.load('64px Ser');
+const W = 1080, H = 1920;
+const TL = await (await fetch('/timeline.json')).json();
+const GEO = await (await fetch('/geo.json')).json();
+const font = await new Promise(r => new FontLoader().load('/node_modules/three/examples/fonts/helvetiker_bold.typeface.json', r));
+const S = TL.scenes;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => { t = clamp(t); return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const eout = t => 1 - Math.pow(1 - clamp(t), 3);
+const back = t => { t = clamp(t); const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+let seed = 1453; const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H); renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('wrap').prepend(renderer.domElement);
+const ENV = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), .04).texture;
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, envMap: ENV, ...o });
+function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); draw(g, w, h); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; }
+function label(text, { size = 56, color = '#fff', stroke = '#000', bg = null, w = 900, h = 120, font = 'Cap' } = {}) {
+  const tex = canvasTex(w, h, (g) => {
+    if (bg) { g.fillStyle = bg; g.beginPath(); g.roundRect(4, 4, w - 8, h - 8, 26); g.fill(); }
+    g.font = `bold ${size}px ${font}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    if (stroke) { g.lineWidth = size * .16; g.strokeStyle = stroke; g.lineJoin = 'round'; g.strokeText(text, w / 2, h / 2 + 3); }
+    g.fillStyle = color; g.fillText(text, w / 2, h / 2 + 3);
+  });
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false })); s.renderOrder = 20; s.userData.aspect = w / h; return s;
+}
+function setLabel(s, worldH) { s.scale.set(worldH * s.userData.aspect, worldH, 1); }
+
+// ================= HARİTA DÜNYASI =================
+const MW = GEO.w, MH = GEO.h, MPP = GEO.mpp, K = MPP / 100, EX = 3;   // 1 birim = 100 m, dikey abartı x3
+const hImg = await new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = '/map_height.png'; });
+const hc = document.createElement('canvas'); hc.width = MW; hc.height = MH; const hg = hc.getContext('2d'); hg.drawImage(hImg, 0, 0);
+const hd = hg.getImageData(0, 0, MW, MH).data; const HM = new Float32Array(MW * MH);
+for (let i = 0; i < MW * MH; i++) HM[i] = (hd[i * 4] * 256 + hd[i * 4 + 1]) / 100 - 100;
+const cImg = await new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = '/map_city.png'; });
+const cc = document.createElement('canvas'); cc.width = MW; cc.height = MH; const cg = cc.getContext('2d'); cg.drawImage(cImg, 0, 0);
+const cd = cg.getImageData(0, 0, MW, MH).data; const inCity = (px, py) => cd[(Math.floor(py) * MW + Math.floor(px)) * 4] > 127;
+function hAt(px, py) { px = clamp(px, 0, MW - 1.001); py = clamp(py, 0, MH - 1.001); const x0 = Math.floor(px), y0 = Math.floor(py), fx = px - x0, fy = py - y0;
+  const a = HM[y0 * MW + x0], b = HM[y0 * MW + x0 + 1], c = HM[(y0 + 1) * MW + x0], d = HM[(y0 + 1) * MW + x0 + 1]; return lerp(lerp(a, b, fx), lerp(c, d, fx), fy); }
+const isWater = (px, py) => hAt(px, py) <= 0.3;
+const wx = px => (px - MW / 2) * K, wz = py => (py - MH / 2) * K;
+const Y = (px, py) => Math.max(0, hAt(px, py)) * EX / 100;
+const W3 = (p, up = 0) => new THREE.Vector3(wx(p[0]), Y(p[0], p[1]) + up, wz(p[1]));
+
+const map = new THREE.Scene();
+map.background = canvasTex(16, 512, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#5d7fa6'); gr.addColorStop(.55, '#c9b28f'); gr.addColorStop(1, '#e8c79a'); g.fillStyle = gr; g.fillRect(0, 0, w, h); });
+map.fog = new THREE.Fog('#c3b79c', 220, 520);
+const SEG_X = 335, SEG_Z = 290;
+const tg = new THREE.PlaneGeometry(MW * K, MH * K, SEG_X, SEG_Z); tg.rotateX(-Math.PI / 2);
+{ const p = tg.attributes.position; for (let i = 0; i < p.count; i++) { const px = p.getX(i) / K + MW / 2, py = p.getZ(i) / K + MH / 2; p.setY(i, hAt(px, py) * EX / 100); } tg.computeVertexNormals(); }
+const mapTex = await new THREE.TextureLoader().loadAsync('/map_color.jpg'); mapTex.colorSpace = THREE.SRGBColorSpace; mapTex.anisotropy = 8;
+const terrain = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ map: mapTex, roughness: 1 })); terrain.receiveShadow = true; map.add(terrain);
+const water = new THREE.Mesh(new THREE.PlaneGeometry(MW * K * 1.6, MH * K * 1.6), new THREE.MeshStandardMaterial({ color: '#1e5a78', transparent: true, opacity: .42, roughness: .12, metalness: .2, envMap: ENV, envMapIntensity: .6 }));
+water.rotation.x = -Math.PI / 2; water.position.y = .015; map.add(water);
+map.add(new THREE.HemisphereLight('#fff4e0', '#4a5a6a', 1.05));
+const sun = new THREE.DirectionalLight('#ffe2b8', 2.2); sun.position.set(-60, 90, 70); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, far: 400 }); map.add(sun);
+
+// --- surlar ---
+const stone = std('#cdbb98', { roughness: .85 }), stoneDark = std('#a8977a', { roughness: .9 });
+const glowMat = new THREE.MeshBasicMaterial({ color: '#ffcf4a', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+function wallStrip(pts, height, width, mat, glowW) {
+  const g = new THREE.Group(); const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = W3(pts[i]), b = W3(pts[i + 1]); const len = a.distanceTo(new THREE.Vector3(b.x, a.y, b.z)) || .01;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(width, height, len + .05), mat);
+    m.position.set((a.x + b.x) / 2, Math.min(a.y, b.y) + height / 2 - .02, (a.z + b.z) / 2); m.lookAt(b.x, m.position.y, b.z); m.castShadow = true;
+    g.add(m); segs.push(m);
+    const gl = new THREE.Mesh(new THREE.BoxGeometry(glowW, height * 1.6, len + .05), glowMat); gl.position.copy(m.position); gl.quaternion.copy(m.quaternion); g.add(gl);
+  }
+  return { g, segs };
+}
+const LW = GEO.landWall;
+const landWall = wallStrip(LW, .36 * 2, .22, stone, .7); map.add(landWall.g);   // 12 m x3 abartı x2 görünürlük
+const seaWall = wallStrip(GEO.seaWall, .25, .12, stoneDark, .45); map.add(seaWall.g);
+// 96 kule: kara suru boyunca eşit aralık
+function along(pts, n) { const L = []; let tot = 0; for (let i = 0; i < pts.length - 1; i++) { const d = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]); L.push(d); tot += d; }
+  const out = []; for (let k = 0; k < n; k++) { let s = (k + .5) / n * tot, i = 0; while (s > L[i] && i < L.length - 1) { s -= L[i]; i++; } const t = s / L[i]; out.push([lerp(pts[i][0], pts[i + 1][0], t), lerp(pts[i][1], pts[i + 1][1], t)]); } return out; }
+const towerPts = along(LW, 96);
+const towers = new THREE.InstancedMesh(new THREE.BoxGeometry(.3, 1.0, .3), stone, 96); towers.castShadow = true;
+{ const m = new THREE.Matrix4(); towerPts.forEach((p, i) => { const v = W3(p); m.makeTranslation(v.x, v.y + .5, v.z); towers.setMatrixAt(i, m); }); }
+map.add(towers);
+// şehir binaları
+const bGeo = new THREE.BoxGeometry(.06, 1, .06); bGeo.translate(0, .5, 0);
+const NB = 9000; const blds = new THREE.InstancedMesh(bGeo, std('#b9a588', { roughness: .95 }), NB); const roofs = new THREE.InstancedMesh(new THREE.ConeGeometry(.055, .035, 4), std('#8e4a34', { roughness: .9 }), NB);
+{ const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(); let k = 0, tries = 0;
+  while (k < NB && tries < 200000) { tries++; const px = rnd() * MW, py = rnd() * MH; if (!inCity(px, py) || isWater(px, py)) continue;
+    const hh = .025 + rnd() * .05; const v = W3([px, py]); e.set(0, rnd() * 3, 0); q.setFromEuler(e);
+    m.compose(v, q, new THREE.Vector3(1 + rnd(), hh, 1 + rnd() * .6)); blds.setMatrixAt(k, m);
+    m.compose(new THREE.Vector3(v.x, v.y + hh, v.z), q, new THREE.Vector3(1.4, 1, 1.4)); roofs.setMatrixAt(k, m); k++; }
+  blds.count = roofs.count = k; }
+map.add(blds, roofs);
+// Ayasofya
+const hagia = new THREE.Group(); { const v = W3(GEO.hagia); hagia.position.copy(v);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(.8, .3, .7), std('#e8c9a0')); base.position.y = .15; hagia.add(base);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(.3, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), std('#9fb2b6', { metalness: .3, roughness: .5 })); dome.position.y = .3; hagia.add(dome); }
+map.add(hagia);
+// Galata kulesi
+const galata = new THREE.Group(); { const v = W3(GEO.galata); galata.position.copy(v); const t = new THREE.Mesh(new THREE.CylinderGeometry(.12, .14, .9, 16), std('#d9c6a5')); t.position.y = .45; galata.add(t);
+  const c = new THREE.Mesh(new THREE.ConeGeometry(.16, .3, 16), std('#5a6a72')); c.position.y = 1.05; galata.add(c); }
+map.add(galata);
+// Rumeli Hisarı
+const rumeli = new THREE.Group(); { const v = W3(GEO.rumeli); rumeli.position.copy(v);
+  for (const [x, z, r, h] of [[0, 0, .35, 1.4], [-.9, .6, .3, 1.2], [.5, 1.1, .32, 1.3]]) { const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.05, h, 20), stone); t.position.set(x, h / 2, z); t.castShadow = true; rumeli.add(t); }
+  const w1 = new THREE.Mesh(new THREE.BoxGeometry(1.6, .5, .15), stone); w1.position.set(-.45, .25, .3); w1.rotation.y = -.6; rumeli.add(w1);
+  const w2 = new THREE.Mesh(new THREE.BoxGeometry(1.4, .5, .15), stone); w2.position.set(-.2, .25, .85); w2.rotation.y = .4; rumeli.add(w2);
+  rumeli.scale.setScalar(1.6); }
+map.add(rumeli);
+// zincir
+const chainA = W3(GEO.chainA), chainB = W3(GEO.chainB); chainA.y = chainB.y = .06;
+const chain = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([chainA, new THREE.Vector3((chainA.x + chainB.x) / 2, .02, (chainA.z + chainB.z) / 2), chainB]), 40, .05, 6), std('#2a2a2a', { metalness: .9, roughness: .35 }));
+map.add(chain);
+const floats = new THREE.InstancedMesh(new THREE.CylinderGeometry(.06, .06, .25, 8), std('#6b4a2a'), 14);
+{ const m = new THREE.Matrix4(); for (let i = 0; i < 14; i++) { const v = chainA.clone().lerp(chainB, i / 13); m.makeRotationZ(Math.PI / 2); m.setPosition(v.x, .07, v.z); floats.setMatrixAt(i, m); } } map.add(floats);
+
+// --- gemiler ---
+function galleyGeos() {
+  const hull = new THREE.BoxGeometry(.32, .12, 1.3, 1, 1, 6); const p = hull.attributes.position;
+  for (let i = 0; i < p.count; i++) { const z = p.getZ(i) / .65; p.setX(i, p.getX(i) * (1 - Math.pow(Math.abs(z), 2.2) * .85)); if (p.getY(i) < 0) p.setX(i, p.getX(i) * .6); p.setY(i, p.getY(i) + Math.pow(Math.abs(z), 3) * .06); }
+  hull.computeVertexNormals(); hull.translate(0, .06, 0);
+  const mast = new THREE.CylinderGeometry(.015, .015, .9, 6); mast.translate(0, .55, .05);
+  const hullM = BGU.mergeGeometries([hull, mast]);
+  const sh = new THREE.Shape(); sh.moveTo(0, 0); sh.lineTo(.0, .75); sh.lineTo(.55, .12); sh.lineTo(0, 0);
+  const sail = new THREE.ShapeGeometry(sh); sail.rotateY(Math.PI / 2); sail.translate(0, .2, -.15);
+  return { hullM, sail };
+}
+const GG = galleyGeos();
+function fleet(n, sailColor) {
+  const hm = new THREE.InstancedMesh(GG.hullM, std('#5a3a22', { roughness: .7 }), n), sm = new THREE.InstancedMesh(GG.sail, new THREE.MeshStandardMaterial({ color: sailColor, side: THREE.DoubleSide, roughness: .8 }), n);
+  hm.castShadow = sm.castShadow = true; map.add(hm, sm); return { hm, sm, n };
+}
+const SHIP_SCALE = 1.0;
+function setShip(f, i, pos, yaw, s = SHIP_SCALE, bob = 0) { const m = new THREE.Matrix4(), q = new THREE.Quaternion().setFromEuler(new THREE.Euler(bob * .05, yaw, bob * .04)); m.compose(pos, q, new THREE.Vector3(s, s, s)); f.hm.setMatrixAt(i, m); f.sm.setMatrixAt(i, m); }
+function waterSpots(center, n, radiusPx, avoidCityLine = false) { const out = []; let tries = 0; while (out.length < n && tries < 50000) { tries++; const a = rnd() * 6.28, r = Math.sqrt(rnd()) * radiusPx; const px = center[0] + Math.cos(a) * r, py = center[1] + Math.sin(a) * r * .8; if (!isWater(px, py)) continue; if (out.some(o => Math.hypot(o[0] - px, o[1] - py) < 7)) continue; out.push([px, py]); } return out; }
+const ottoFleet = fleet(110, '#c8352b'), allyFleet = fleet(26, '#efe6cf'), haulFleet = fleet(70, '#c8352b');
+const ottoSpots = waterSpots(GEO.fleet, 110, 95);
+// savunma gemileri: zincirin içinde, Haliç'te
+const gh = [(GEO.chainA[0] + GEO.chainB[0]) / 2 - 25, (GEO.chainA[1] + GEO.chainB[1]) / 2 - 10];
+const allySpots = waterSpots(gh, 26, 40);
+// karadan yürüyüş güzergâhı (piksel)
+const HP = GEO.haulPath; const haulCurve = new THREE.CatmullRomCurve3(HP.map(p => new THREE.Vector3(p[0], 0, p[1])));
+const ghTarget = waterSpots(GEO.goldenHornFleet, 70, 70);
+const logPts = []; for (let i = 0; i <= 60; i++) { const v = haulCurve.getPoint(i / 60); logPts.push(W3([v.x, v.z], .05)); }
+const haulLine = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(logPts), 120, .1, 6), new THREE.MeshBasicMaterial({ color: '#ffcf4a', transparent: true, opacity: 0 })); map.add(haulLine);
+const logs = new THREE.InstancedMesh(new THREE.CylinderGeometry(.04, .04, .5, 6), std('#8a5a32'), 60);
+{ const m = new THREE.Matrix4(); for (let i = 0; i < 60; i++) { const v = logPts[i], n = logPts[Math.min(59, i + 1)]; const yaw = Math.atan2(n.x - v.x, n.z - v.z); m.makeRotationFromEuler(new THREE.Euler(0, yaw, Math.PI / 2)); m.setPosition(v.x, v.y + .02, v.z); logs.setMatrixAt(i, m); } } logs.visible = false; map.add(logs);
+
+// --- ordular (nokta = asker) ---
+function armyMaterial(color, size) {
+  return new THREE.ShaderMaterial({ transparent: true, depthWrite: false,
+    uniforms: { uMarch: { value: 0 }, uAssault: { value: 0 }, uFade: { value: 0 }, uColor: { value: new THREE.Color(color) }, uSize: { value: size }, uShow: { value: 0 } },
+    vertexShader: `attribute vec3 aA; attribute vec3 aB; attribute vec3 aC; attribute vec3 aD; uniform float uMarch,uAssault,uFade,uSize,uShow; varying float vA;
+      void main(){ float m=smoothstep(aD.x,aD.x+.35,uMarch); vec3 p=mix(aA,aB,m);
+        float s=smoothstep(aD.z,aD.z+.45,uAssault)*aD.y; p=mix(p,aC,s);
+        vA=uShow*(1.-step(aD.z+.0001,uFade)*(1.-aD.y)); if(aD.y<-.5) vA*=1.-smoothstep(-aD.y-1.,-aD.y-.8,uFade);
+        vec4 mv=modelViewMatrix*vec4(p,1.); gl_Position=projectionMatrix*mv; gl_PointSize=max(1.6,uSize*60./-mv.z); }`,
+    fragmentShader: `uniform vec3 uColor; varying float vA; void main(){ vec2 c=gl_PointCoord-.5; if(dot(c,c)>.25||vA<.01) discard; gl_FragColor=vec4(uColor*1.25,vA*.95); }` });
+}
+const NO = 65000, ND = 7000;
+function lwPoint(t) { const pts = along(LW, 400); const i = Math.min(399, Math.floor(t * 399)); return pts[i]; }
+const lw400 = along(LW, 400);
+const romanusPx = GEO.romanus, adrPx = GEO.adrianople; const breachPx = [(romanusPx[0] + adrPx[0]) / 2, (romanusPx[1] + adrPx[1]) / 2];
+function buildOtto() {
+  const A = new Float32Array(NO * 3), B = new Float32Array(NO * 3), C = new Float32Array(NO * 3), Dd = new Float32Array(NO * 3);
+  for (let i = 0; i < NO; i++) {
+    let px, py;
+    if (rnd() < .09) { // Zağanos Paşa: Haliç kuzeyi
+      do { px = GEO.kasimpasa[0] - 40 + rnd() * 110; py = GEO.kasimpasa[1] - 40 - rnd() * 80; } while (isWater(px, py));
+    } else {
+      // Lycus vadisine yoğunlaşan, kara surunun batısında yay
+      let t = rnd(); if (rnd() < .45) t = clamp(.48 + (rnd() - .5) * .3); const p = lw400[Math.floor(t * 399)];
+      const d = 18 + Math.pow(rnd(), 1.4) * 115; px = p[0] - d - rnd() * 6; py = p[1] + (rnd() - .5) * 8;
+      if (isWater(px, py)) { px += 15; }
+    }
+    const b = W3([px, py], .03); B.set([b.x, b.y, b.z], i * 3);
+    const a = W3([px - 90 - rnd() * 60, py + (rnd() - .5) * 40], .03); A.set([a.x, a.y, a.z], i * 3);
+    // hücum hedefi: gedikten şehir içine yayılma
+    const isA = rnd() < .55 ? 1 : 0; let cx = breachPx[0] + 8 + Math.pow(rnd(), .8) * 230 * (isA ? 1 : 0), cy = breachPx[1] + (rnd() - .5) * 2 * Math.min(170, 30 + (cx - breachPx[0]) * .9);
+    let tries = 0; while ((!inCity(cx, cy) || isWater(cx, cy)) && tries++ < 20) { cx = breachPx[0] + 8 + rnd() * 200; cy = breachPx[1] + (rnd() - .5) * 200; }
+    const c = W3([cx, cy], .03); C.set([c.x, c.y, c.z], i * 3);
+    Dd.set([rnd() * .6, isA, rnd() * .5], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(B, 3)); g.setAttribute('aA', new THREE.BufferAttribute(A, 3)); g.setAttribute('aB', new THREE.BufferAttribute(B, 3)); g.setAttribute('aC', new THREE.BufferAttribute(C, 3)); g.setAttribute('aD', new THREE.BufferAttribute(Dd, 3));
+  const pts = new THREE.Points(g, armyMaterial('#ff4b3e', .55)); pts.frustumCulled = false; pts.renderOrder = 5; return pts;
+}
+function buildDef() {
+  const A = new Float32Array(ND * 3), Dd = new Float32Array(ND * 3); const sw = GEO.seaWall;
+  for (let i = 0; i < ND; i++) {
+    let px, py, tries = 0;
+    do { if (rnd() < .62) { const p = lw400[Math.floor(rnd() * 399)]; px = p[0] + 4 + rnd() * 9; py = p[1] + (rnd() - .5) * 4; } else { const p = sw[Math.floor(rnd() * sw.length)]; const q = GEO.hagia; const dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy); px = p[0] + dx / L * (3 + rnd() * 7); py = p[1] + dy / L * (3 + rnd() * 7); } } while (!inCity(px, py) && tries++ < 10);
+    const a = W3([px, py], .05); A.set([a.x, a.y, a.z], i * 3);
+    const db = Math.hypot(px - breachPx[0], py - breachPx[1]); Dd.set([rnd() * .5, -(1 + clamp(db / 260) * .9 + rnd() * .1) + 0, 2], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(A, 3)); ['aA', 'aB', 'aC'].forEach(n => g.setAttribute(n, new THREE.BufferAttribute(A, 3))); g.setAttribute('aD', new THREE.BufferAttribute(Dd, 3));
+  const pts = new THREE.Points(g, armyMaterial('#ffd23f', .7)); pts.frustumCulled = false; pts.renderOrder = 6; return pts;
+}
+const otto = buildOtto(), def = buildDef(); map.add(otto, def);
+// harita etiketleri
+const L = {};
+function addLabel(key, text, px, up, hgt, o) { const s = label(text, o); s.position.copy(W3(px, up)); setLabel(s, hgt); s.visible = false; map.add(s); L[key] = s; return s; }
+addLabel('city', 'KONSTANTİNOPOLİS', [GEO.hagia[0] - 190, GEO.hagia[1] + 10], 2.2, 2.0, { size: 60, color: '#fff3d6', font: 'Ser' });
+addLabel('haliç', 'HALİÇ', [GEO.goldenHornFleet[0] - 40, GEO.goldenHornFleet[1] - 50], 1, 2.0, { size: 56, color: '#cfe9ff' });
+addLabel('bogaz', 'BOĞAZ', GEO.bosphorus, 1, 2.6, { size: 56, color: '#cfe9ff' });
+addLabel('marmara', 'MARMARA', GEO.marmara, 1, 3.4, { size: 60, color: '#cfe9ff' });
+addLabel('galata', 'GALATA', [GEO.galata[0] + 20, GEO.galata[1] - 25], 2.2, 1.6, { size: 52 });
+addLabel('rumeli', 'RUMELİ HİSARI', GEO.rumeli, 4.5, 2.2, { size: 54, color: '#ffcf4a' });
+addLabel('karargah', 'OSMANLI KARARGÂHI', GEO.camp, 3, 2.0, { size: 50, color: '#ffb0a8' });
+addLabel('lycus', 'LYCUS VADİSİ', [breachPx[0] - 25, breachPx[1]], 3.4, 1.8, { size: 50, color: '#ffcf4a' });
+addLabel('zincir', 'ZİNCİR', [(GEO.chainA[0] + GEO.chainB[0]) / 2 + 30, (GEO.chainA[1] + GEO.chainB[1]) / 2], 1.6, 1.4, { size: 52, color: '#fff' });
+addLabel('surlar', 'KARA SURU 5,7 KM', [LW[6][0] - 70, LW[6][1]], 3, 1.8, { size: 52, color: '#ffcf4a' });
+addLabel('ott', '≈110 GEMİ', [GEO.fleet[0] + 30, GEO.fleet[1] - 40], 2, 1.5, { size: 52, color: '#ffb0a8' });
+addLabel('ally', '26 GEMİ', [gh[0] - 20, gh[1] - 25], 2, 1.3, { size: 52, color: '#fff3d6' });
+addLabel('haul', '~70 GEMİ', [HP[2][0], HP[2][1] - 25], 3, 1.6, { size: 52, color: '#ffcf4a' });
+// Şahi topu (harita) + gülle
+const cannonPos = W3(GEO.cannon, .1); const target = W3(lw400[Math.floor(.43 * 399)], .5);
+const ball = new THREE.Mesh(new THREE.SphereGeometry(.14, 12, 10), std('#bbb')); ball.visible = false; map.add(ball);
+const trail = []; for (let i = 0; i < 14; i++) { const s = new THREE.Mesh(new THREE.SphereGeometry(.1 - i * .006, 8, 6), new THREE.MeshBasicMaterial({ color: '#ffd9a0', transparent: true, opacity: .5 - i * .03 })); s.visible = false; map.add(s); trail.push(s); }
+const dust = new THREE.InstancedMesh(new THREE.SphereGeometry(.12, 6, 5), new THREE.MeshStandardMaterial({ color: '#d8c8a8', transparent: true, opacity: .8, roughness: 1 }), 60); dust.visible = false; map.add(dust);
+const flashL = new THREE.PointLight('#ffb050', 0, 20); map.add(flashL);
+const mapCam = new THREE.PerspectiveCamera(42, W / H, .1, 800);
+
+// ================= SUR KESİTİ (1 birim = 1 m) =================
+const sect = new THREE.Scene(); sect.background = canvasTex(16, 512, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#4e6d8f'); gr.addColorStop(1, '#d9b98a'); g.fillStyle = gr; g.fillRect(0, 0, w, h); }); sect.fog = new THREE.Fog('#c8ae86', 160, 420);
+sect.add(new THREE.HemisphereLight('#cfe0ff', '#4a3a2a', .45));
+const sl = new THREE.DirectionalLight('#ffd9a8', 2.6); sl.position.set(-40, 35, 55); sl.castShadow = true; sl.shadow.mapSize.set(2048, 2048); Object.assign(sl.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60 }); sect.add(sl);
+const sectCam = new THREE.PerspectiveCamera(40, W / H, .1, 600);
+const SD = 24; // kesit derinliği
+{ // profil: dışarı (x<0) -> içeri (x>0)
+  const ground = std('#6f7f3e', { roughness: 1 }), dirt = std('#9a8566', { roughness: 1 }), wallM = std('#b3a07c', { roughness: .9 }), brick = std('#b06a4a', { roughness: .8 });
+  const box = (w, h, d, x, y, z, m) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); b.position.set(x, y, z); b.castShadow = b.receiveShadow = true; sect.add(b); return b; };
+  box(60, 1, SD, -50, -.5, 0, ground);                // dış zemin
+  box(21, 1, SD, -9.5, -10.5, 0, dirt);               // hendek tabanı (20+ m geniş, 10 m derin)
+  box(1.5, 10, SD, -19.75, -5, 0, dirt);              // dış şev
+  box(1.5, 12, SD, .75, -5, 0, wallM);                // hendek iç duvarı (kontrskarp)
+  box(1.2, 2, SD, .6, 2, 0, wallM);                   // hendek duvarı korkuluğu
+  box(14, 1, SD, 8, -.5, 0, ground);                  // dış teras
+  box(2, 9, SD, 16, 4.5, 0, wallM);                   // dış sur 8,5–9 m, taban 2 m
+  box(18, 1, SD, 26, -.5 + 2, 0, ground);             // peribolos
+  box(6, 2, SD, 26 - 9 + 3, .5, 0, ground);
+  box(5, 12, SD, 37.5, 6, 0, wallM);                  // iç sur 12 m, 5–6 m kalın
+  box(60, 1, SD, 70, -.5 + 2, 0, ground);             // şehir zemini
+  for (const [x, w, h] of [[16, 2, 9], [37.5, 5, 12]]) for (let i = 0; i < 4; i++) { const z = -SD / 2 + 1 + i * (SD - 2) / 3; for (let k = -1; k <= 1; k += 2) box(.5, 1, .6, x + k * (w / 2 - .25), h + .5, z, wallM); }
+  for (const [x, w, h] of [[16, 2, 9], [37.5, 5, 12]]) for (let b = 0; b < 3; b++) box(w + .05, .4, SD + .05, x, 2 + b * (h / 3.2), 0, brick);
+  // kuleler
+  const t1 = box(10, 13, 10, 37.5 + 2.5, 6.5, -SD / 2 - 5, wallM); const t2 = box(7, 11, 7, 16 + 1, 5.5, -SD / 2 - 3.5, wallM);
+  const water2 = new THREE.Mesh(new THREE.BoxGeometry(18.5, 3, SD), new THREE.MeshStandardMaterial({ color: '#3b6a74', transparent: true, opacity: .8, roughness: .2 })); water2.position.set(-9.5, -8.5, 0); sect.add(water2);
+}
+function human(color = '#2b3a5a') { const g = new THREE.Group(); const m = std(color, { roughness: .8 }), sk = std('#d9a77f');
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(.2, .75, 6, 10), m); body.position.y = 1.15; g.add(body);
+  for (const s of [-1, 1]) { const l = new THREE.Mesh(new THREE.CapsuleGeometry(.09, .7, 4, 8), m); l.position.set(s * .1, .45, 0); g.add(l); }
+  const hd = new THREE.Mesh(new THREE.SphereGeometry(.13, 12, 10), sk); hd.position.y = 1.65; g.add(hd); g.traverse(o => o.castShadow = true); return g; }
+const man1 = human(); man1.position.set(28, 1.5, 6); man1.rotation.y = -1; sect.add(man1);
+const sl1 = []; const dimLbl = (text, pos, hgt = 2.4, color = '#ffcf4a') => { const s = label(text, { size: 54, color }); s.position.copy(pos); setLabel(s, hgt); sect.add(s); sl1.push(s); return s; };
+const dHendek = dimLbl('HENDEK 20 M+', new THREE.Vector3(-9.5, 3, 13), 3.2);
+const dDis = dimLbl('DIŞ SUR 8,5–9 M', new THREE.Vector3(16, 13, -2), 2.6);
+const dIc = dimLbl('İÇ SUR 12 M', new THREE.Vector3(37.5, 17, -6), 3.0);
+const dMan = dimLbl('1,75 M', new THREE.Vector3(28, 3.6, 6), 1.2, '#fff');
+// ölçü çizgileri
+function dimLine(a, b) { const g = new THREE.BufferGeometry().setFromPoints([a, b]); const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color: '#ffcf4a', depthTest: false })); l.renderOrder = 19; sect.add(l); return l; }
+dimLine(new THREE.Vector3(-19, -10, 12.5), new THREE.Vector3(0, -10, 12.5)); dimLine(new THREE.Vector3(14.5, 0, 12.5), new THREE.Vector3(14.5, 9, 12.5)); dimLine(new THREE.Vector3(34.5, 2, 12.5), new THREE.Vector3(34.5, 12, 12.5));
+
+// ================= ŞAHİ TOPU (1 birim = 1 m) =================
+const gun = new THREE.Scene(); gun.background = canvasTex(16, 512, (g, w, h) => { const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#3b2f2a'); gr.addColorStop(1, '#7a5a3a'); g.fillStyle = gr; g.fillRect(0, 0, w, h); });
+gun.fog = new THREE.Fog('#4a3a2e', 20, 70);
+gun.add(new THREE.HemisphereLight('#ffe6c0', '#2a2018', .8));
+const gl1 = new THREE.SpotLight('#ffd9a0', 380, 60, .6, .5, 1.2); gl1.position.set(-6, 14, 10); gl1.castShadow = true; gl1.shadow.mapSize.set(2048, 2048); gun.add(gl1);
+const gl2 = new THREE.PointLight('#ff8a3a', 120, 30); gl2.position.set(6, 3, -6); gun.add(gl2);
+const gunCam = new THREE.PerspectiveCamera(40, W / H, .1, 300);
+const bronze = std('#8a6a3c', { metalness: .9, roughness: .38, envMapIntensity: .8 });
+const groundG = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), std('#5c4a36', { roughness: 1 })); groundG.rotation.x = -Math.PI / 2; groundG.receiveShadow = true; gun.add(groundG);
+const bombard = new THREE.Group(); gun.add(bombard);
+{ // 8,2 m: barut odası (3,2 m, dar) + namlu (5 m, Ø iç 0,76 m)
+  const prof = [[0, 0], [.55, 0], [.62, .1], [.62, 3.0], [.7, 3.05], [.7, 3.25], [.98, 3.3], [1.0, 8.05], [1.06, 8.1], [1.06, 8.2], [.4, 8.2], [.4, 3.6], [0, 3.6]].map(p => new THREE.Vector2(p[0], p[1]));
+  const body = new THREE.Mesh(new THREE.LatheGeometry(prof, 48), bronze); body.rotation.z = -Math.PI / 2 + .04; body.position.set(-4.1, 1.25, 0); body.castShadow = true; bombard.add(body);
+  for (let i = 0; i < 6; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(i < 2 ? .64 : 1.01, .06, 8, 40), bronze); r.rotation.y = Math.PI / 2; r.position.set(-4.1 + (i < 2 ? .8 + i * 1.6 : 3.6 + (i - 2) * 1.4), 1.25 + (i < 2 ? .8 + i * 1.6 : 3.6 + (i - 2) * 1.4) * .04 - .0, 0); bombard.add(r); }
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(8.6, .5, 2.2), std('#6b4a2a', { roughness: .8 })); bed.position.set(0, .25, 0); bed.castShadow = bed.receiveShadow = true; bombard.add(bed);
+  for (const x of [-3.5, -1, 1.5, 3.8]) { const c = new THREE.Mesh(new THREE.BoxGeometry(.35, 1.2, 2.4), std('#5a3a20')); c.position.set(x, .7, 0); bombard.add(c); }
+  const stoneBall = new THREE.Mesh(new THREE.SphereGeometry(.38, 32, 24), std('#9a958c', { roughness: .9 })); stoneBall.position.set(5.6, .38, 1.9); stoneBall.castShadow = true; bombard.add(stoneBall);
+}
+const man2 = human('#7a2a20'); man2.position.set(1.5, 0, 2.2); man2.rotation.y = -.6; gun.add(man2);
+const gLbl = (text, pos, hgt = .8, color = '#ffcf4a') => { const s = label(text, { size: 54, color }); s.position.copy(pos); setLabel(s, hgt); gun.add(s); return s; };
+const gL1 = gLbl('8,2 M', new THREE.Vector3(0, 3.3, 0), .9), gL2 = gLbl('Ø 76 CM · 540 KG GÜLLE', new THREE.Vector3(5.6, 1.35, 1.9), .55), gL3 = gLbl('1,75 M', new THREE.Vector3(1.5, 2.15, 2.2), .45, '#fff');
+const gunLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-4.1, 2.75, 0), new THREE.Vector3(4.1, 2.75, 0)]), new THREE.LineBasicMaterial({ color: '#ffcf4a', depthTest: false })); gunLine.renderOrder = 19; gun.add(gunLine);
+
+// ================= ABONE BUTONU (kameraya bağlı) =================
+const btn = new THREE.Group(); mapCam.add(btn); map.add(mapCam); btn.position.set(0, -2.6, -14); btn.visible = false;
+const btnMat = std('#d8141a', { roughness: .35 });
+const bm = new THREE.Mesh(new RoundedBoxGeometry(6.4, 1.8, .8, 6, .4), btnMat); btn.add(bm);
+function t3(str, size) { const g = new TextGeometry(str, { font, size, depth: size * .25, curveSegments: 8, bevelEnabled: true, bevelThickness: size * .05, bevelSize: size * .03, bevelSegments: 3 }); g.center(); return new THREE.Mesh(g, std('#ffffff', { roughness: .3 })); }
+const bt1 = t3('ABONE OL', .62); bt1.position.z = .45; btn.add(bt1); const bt2 = t3('ABONE OLUNDU', .46); bt2.position.z = .45; bt2.visible = false; btn.add(bt2);
+const bell = new THREE.Mesh(new THREE.LatheGeometry([[0, .9], [.25, .86], [.42, .7], [.5, .28], [.66, -.07], [.7, -.14], [0, -.14]].map(p => new THREE.Vector2(p[0], p[1])), 32), std('#ffcc33', { metalness: 1, roughness: .2, envMapIntensity: 2 }));
+bell.position.set(4.3, -.3, 0); btn.add(bell);
+const cursor = new THREE.Group(); btn.add(cursor);
+{ const sh = new THREE.Shape(); sh.moveTo(0, 0); sh.lineTo(0, -2.2); sh.lineTo(.55, -1.7); sh.lineTo(.95, -2.6); sh.lineTo(1.3, -2.45); sh.lineTo(.9, -1.55); sh.lineTo(1.6, -1.5); sh.lineTo(0, 0);
+  const g = new THREE.ExtrudeGeometry(sh, { depth: .2, bevelEnabled: true, bevelThickness: .05, bevelSize: .05, bevelSegments: 2 }); cursor.add(new THREE.Mesh(g, std('#fff'))); const o = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: '#111', side: THREE.BackSide })); o.scale.setScalar(1.08); o.position.set(-.04, .06, -.02); cursor.add(o); cursor.scale.setScalar(.55); }
+const conf = new THREE.InstancedMesh(new THREE.PlaneGeometry(.16, .28), new THREE.MeshStandardMaterial({ side: THREE.DoubleSide }), 140);
+{ const c = new THREE.Color(); const pal = ['#ffe53b', '#ff3d7f', '#2ec4b6', '#3a86ff', '#ff9e1b', '#fff']; for (let i = 0; i < 140; i++) conf.setColorAt(i, c.set(pal[i % 6])); } btn.add(conf);
+
+// ================= ZAMAN ÇİZELGESİ =================
+const FIRE = TL.fire, IMPACT = TL.impact, BREACH = TL.breach, PRESS = TL.press;
+const CAPS = [
+  [0.5, 2.5, '*1453*', 'title'], [2.6, 4.9, '21 YAŞINDA BİR SULTAN, *1.100 YILLIK* BİR BAŞKENTE KARŞI'],
+  [5.2, 7.6, '*THEODOSİUS SURLARI*'], [7.6, 10.4, 'KARA SURU *5,7 KM* · DENİZ SURLARIYLA ÇEVRİLİ'],
+  [10.7, 12.6, '*ÜÇ KATMANLI* SAVUNMA'], [12.6, 14.5, 'HENDEK *20 M+* GENİŞ, *10 M\'YE KADAR* DERİN'], [14.5, 16.4, 'İÇ SUR *12 M* · *96 KULE*'],
+  [16.7, 18.8, '*15 NİSAN 1452*: RUMELİ HİSARI'], [18.8, 20.9, 'BOĞAZ ARTIK *OSMANLI KONTROLÜNDE*'],
+  [21.2, 23.6, '*6 NİSAN 1453* · KUŞATMA BAŞLIYOR'], [23.6, 26.2, 'OSMANLI ORDUSU *50–80 BİN*'], [26.2, 28.2, 'SAVUNMA *≈ 7.000* (2.000\'İ YABANCI)'], [28.2, 29.9, 'DONANMA: *≈110* GEMİYE KARŞI *26*'],
+  [30.2, 32.4, '*ŞAHİ TOPU* · USTA ORBAN'], [32.4, 34.4, '*8,2 M* NAMLU · *540 KG* GÜLLE'], [34.4, 37.3, 'GÜNDE EN FAZLA *7 ATIŞ*'],
+  [37.7, 39.9, 'HALİÇ\'İN AĞZI *ZİNCİRLE* KAPATILDI'], [39.9, 41.9, 'OSMANLI DONANMASI *İÇERİ GİREMEDİ*'],
+  [42.2, 44.6, '*22 NİSAN*: İMKÂNSIZ DENEN HAMLE'], [44.6, 46.9, '*~70 GEMİ* KARADAN, TEPEDEN AŞIRILDI'], [46.9, 48.9, 'YAĞLANMIŞ KÜTÜKLERLE *HALİÇ\'E*'],
+  [49.2, 51.0, '*29 MAYIS* · GECE YARISI SON HÜCUM'], [51.0, 52.6, 'GIUSTINIANI YARALANDI, *SAVUNMA ÇÖZÜLDÜ*'], [52.6, 54.2, '*53 GÜN* SONRA ŞEHİR ALINDI'],
+  [54.5, 56.5, 'SENCE FETHİN *ANAHTARI* NEYDİ?'], [56.5, 59.5, '*TOP MU, GEMİLER Mİ?* YORUMLARA YAZ'],
+];
+const DATES = [[0, 5, ''], [5, 16.5, '1452 · KONSTANTİNOPOLİS'], [16.5, 21, '1452'], [21, 30, '6 NİSAN 1453'], [30, 37.5, 'NİSAN–MAYIS 1453'], [37.5, 42, 'NİSAN 1453'], [42, 49, '22 NİSAN 1453'], [49, 54.3, '29 MAYIS 1453'], [54.3, 60, '']];
+const capEl = document.querySelector('#cap div'), capBox = document.getElementById('cap'), dateEl = document.getElementById('date'), legend = document.getElementById('legend'), counter = document.getElementById('counter'), scaleEl = document.getElementById('scale'), srcEl = document.getElementById('src'), flashEl = document.getElementById('flash');
+scaleEl.querySelector('div').style.width = '0px';
+let lastCap = null, lastDate = null;
+const fmt = s => s.replace(/\*([^*]+)\*/g, '<span class="hl">$1</span>');
+const nf = n => Math.round(n).toLocaleString('tr-TR');
+
+// kamera yardımcıları (piksel -> dünya)
+const P3 = (p, y) => new THREE.Vector3(wx(p[0]), y, wz(p[1]));
+const cityC = [(GEO.hagia[0] + GEO.romanus[0]) / 2, (GEO.hagia[1] + GEO.romanus[1]) / 2];
+function camTo(cam, pos, tgt) { cam.position.copy(pos); cam.lookAt(tgt); }
+function mixV(a, b, t) { return a.clone().lerp(b, t); }
+
+const composer = new EffectComposer(renderer); const rp = new RenderPass(map, mapCam); composer.addPass(rp);
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), .25, .4, .95));
+composer.addPass(new OutputPass());
+const grade = new ShaderPass({ uniforms: { tDiffuse: { value: null }, time: { value: 0 }, fl: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float time,fl; varying vec2 vUv; float h(vec2 p){ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453); }
+    void main(){ vec3 c=texture2D(tDiffuse,vUv).rgb; float l=dot(c,vec3(.299,.587,.114));
+      c=mix(c, c*vec3(1.06,1.0,.92), .6); c=mix(vec3(l),c,1.08);
+      c+= (h(vUv*vec2(1080.,1920.)+floor(time*24.))-.5)*.045;
+      vec2 v=vUv-.5; c*=1.-dot(v*vec2(1.,.7),v*vec2(1.,.7))*1.1; c+=fl;
+      gl_FragColor=vec4(c,1.); }` });
+composer.addPass(grade);
+
+const tmpM = new THREE.Matrix4();
+window.renderFrame = (t) => {
+  let si = 0; for (let i = 0; i < S.length; i++) if (t >= S[i]) si = i;
+  const lt = t - S[si];
+  let scene = map, cam = mapCam;
+  Object.values(L).forEach(s => s.visible = false);
+  landWall.g.visible = seaWall.g.visible = true; glowMat.opacity = 0;
+  otto.material.uniforms.uShow.value = 0; def.material.uniforms.uShow.value = 0;
+  ball.visible = false; trail.forEach(s => s.visible = false); dust.visible = false; flashL.intensity = 0; haulLine.material.opacity = 0; logs.visible = false;
+  rumeli.visible = t > 16.5 + 1.2; btn.visible = false;
+  water.material.opacity = .42;
+  // filolar: varsayılan konumlar
+  const wob = t * 1.3;
+  ottoSpots.forEach((p, i) => setShip(ottoFleet, i, W3(p, .0), 2.3 + hash(i) * .6, SHIP_SCALE, Math.sin(wob + i)));
+  allySpots.forEach((p, i) => setShip(allyFleet, i, W3(p, 0), 1.2 + hash(i + 9) * .5, SHIP_SCALE, Math.sin(wob + i * 2)));
+  ottoFleet.hm.visible = ottoFleet.sm.visible = t > 21 + 6.5; allyFleet.hm.visible = allyFleet.sm.visible = t > 21 + 6.5;
+  haulFleet.hm.visible = haulFleet.sm.visible = t >= S[7];
+  // gemiler karadan
+  const hk = clamp((t - S[7] - .6) / 5.6);
+  for (let i = 0; i < 70; i++) {
+    const u = clamp(hk * 1.6 - i / 70 * .6);
+    let pos, yaw;
+    if (u < 1) { const pp = haulCurve.getPoint(u), pn = haulCurve.getPoint(Math.min(1, u + .01)); pos = W3([pp.x, pp.z], .05 + (i % 3) * .0); pos.x += ((i % 5) - 2) * .25; yaw = Math.atan2(wx(pn.x) - wx(pp.x), wz(pn.z) - wz(pp.z)); }
+    else { const tgt = ghTarget[i % ghTarget.length]; const end = haulCurve.getPoint(1); const k = clamp((u - 1) * 3 + (hk >= 1 ? 1 : 0)); pos = W3([lerp(end.x, tgt[0], k), lerp(end.z, tgt[1], k)], 0); yaw = 4.2; }
+    if (t < S[7] + .6 && t >= S[7]) { const p0 = haulCurve.getPoint(0); pos = W3([p0.x + 6 + (i % 10) * 3, p0.y + 0 + Math.floor(i / 10) * 3 + 10], 0); pos = W3([HP[0][0] + 8 + (i % 10) * 3.5, HP[0][1] + 10 + Math.floor(i / 10) * 3.5], 0); yaw = 2.6; }
+    setShip(haulFleet, i, pos, yaw, SHIP_SCALE, Math.sin(wob + i));
+  }
+  [ottoFleet, allyFleet, haulFleet].forEach(f => { f.hm.instanceMatrix.needsUpdate = f.sm.instanceMatrix.needsUpdate = true; });
+
+  const om = otto.material.uniforms, dm = def.material.uniforms;
+  if (si === 0) {
+    const k = ease(lt / 5); camTo(mapCam, mixV(P3([cityC[0] + 40, cityC[1] + 420], 160), P3([cityC[0] - 10, cityC[1] + 150], 34), k), mixV(P3([cityC[0], cityC[1] - 80], 0), P3(cityC, 0), k));
+    L.city.visible = lt > 2.6; L.marmara.visible = lt > 1.2; L.bogaz.visible = lt > 1.5;
+  } else if (si === 1) {
+    const k = ease(lt / 5.5);
+    camTo(mapCam, mixV(P3([LW[10][0] - 160, LW[10][1] + 210], 48), P3([LW[6][0] - 120, LW[6][1] + 120], 22), k), mixV(P3(cityC, 0), P3([LW[6][0] + 40, LW[6][1] - 30], 0), k));
+    glowMat.opacity = .25 + .2 * Math.sin(lt * 5); L.surlar.visible = lt > 2.2; L.city.visible = true; L.haliç.visible = true;
+  } else if (si === 2) {
+    scene = sect; cam = sectCam;
+    const k = ease(lt / 6); camTo(sectCam, new THREE.Vector3(lerp(-62, -48, k), lerp(30, 40, k), lerp(26, 34, k)), new THREE.Vector3(lerp(12, 18, k), lerp(0, 3, k), 0));
+    dHendek.visible = lt > 1.8; dDis.visible = lt > 3.2; dIc.visible = lt > 3.8; dMan.visible = lt > 2.4;
+  } else if (si === 3) {
+    const k = ease(lt / 4.5); const r = GEO.rumeli;
+    camTo(mapCam, mixV(P3([GEO.galata[0] - 20, GEO.galata[1] + 160], 60), P3([r[0] - 110, r[1] + 140], 34), k), mixV(P3(GEO.galata, 0), P3(r, 1), k));
+    rumeli.scale.setScalar(1.6 * back((lt - 1.2) / .8) + .001); L.rumeli.visible = lt > 1.5; L.bogaz.visible = true;
+  } else if (si === 4) {
+    const k = ease(lt / 9); const c = [breachPx[0] - 40, breachPx[1] + 30];
+    camTo(mapCam, mixV(P3([c[0] - 260, c[1] + 330], 95), P3([c[0] - 120, c[1] + 300], 55), k), mixV(P3([c[0] + 60, c[1] - 40], 0), P3([c[0] + 90, c[1] - 70], 0), k));
+    om.uShow.value = 1; om.uMarch.value = clamp(lt / 4.5); dm.uShow.value = clamp((lt - 4.8) / .6);
+    L.karargah.visible = lt > 3; L.city.visible = true; L.ott.visible = lt > 6.8; L.ally.visible = lt > 7.2;
+  } else if (si === 5) {
+    if (t < FIRE - .9) { scene = gun; cam = gunCam; const k = ease(lt / 4.6); camTo(gunCam, new THREE.Vector3(lerp(11, 5, k), lerp(3, 4.5, k), lerp(14, 18, k)), new THREE.Vector3(lerp(2, 0, k), 1.3, 0)); gL1.visible = lt > 1.2; gL2.visible = lt > 2.4; gL3.visible = lt > 2.0; }
+    else {
+      const k = ease((t - FIRE + .9) / 2.2); camTo(mapCam, mixV(P3([GEO.cannon[0] - 40, GEO.cannon[1] + 70], 12), P3([GEO.cannon[0] - 30, GEO.cannon[1] + 60], 9), k), P3([target.x / K + MW / 2 - 10, target.z / K + MH / 2], 1));
+      mapCam.lookAt(cannonPos.clone().lerp(target, .6));
+      om.uShow.value = 1; om.uMarch.value = 1; dm.uShow.value = 1;
+      const f = clamp((t - FIRE) / (IMPACT - FIRE));
+      if (t > FIRE) { const p = cannonPos.clone().lerp(target, f); p.y += Math.sin(f * Math.PI) * 3.5; ball.position.copy(p); ball.visible = f < 1;
+        trail.forEach((s, i) => { const ff = clamp(f - i * .025); const q = cannonPos.clone().lerp(target, ff); q.y += Math.sin(ff * Math.PI) * 3.5; s.position.copy(q); s.visible = f < 1 && ff > 0; }); }
+      flashL.position.copy(cannonPos).add(new THREE.Vector3(0, 1, 0)); flashL.intensity = t > FIRE ? 600 * Math.exp(-(t - FIRE) * 8) : 0;
+      if (t > IMPACT) { dust.visible = true; const kk = t - IMPACT; for (let i = 0; i < 60; i++) { const a = hash(i) * 6.28, sp = .5 + hash(i * 3) * 2; tmpM.makeScale(1 + kk * 3, 1 + kk * 3, 1 + kk * 3); tmpM.setPosition(target.x + Math.cos(a) * sp * kk * 2, target.y + hash(i * 5) * kk * 3 - kk * kk, target.z + Math.sin(a) * sp * kk * 2); dust.setMatrixAt(i, tmpM); } dust.instanceMatrix.needsUpdate = true; dust.material.opacity = clamp(.9 - kk * .5); }
+    }
+  } else if (si === 6) {
+    const k = ease(lt / 4.5); const m = [(GEO.chainA[0] + GEO.chainB[0]) / 2, (GEO.chainA[1] + GEO.chainB[1]) / 2];
+    camTo(mapCam, mixV(P3([m[0] + 160, m[1] + 30], 26), P3([m[0] + 70, m[1] + 15], 11), k), P3([m[0] - 30, m[1] - 10], 0));
+    L.zincir.visible = true; L.galata.visible = true; L.ally.visible = true;
+    // Osmanlı öncü gemileri zincire yaklaşıp geri seker
+    for (let i = 0; i < 8; i++) { const bounce = Math.max(0, Math.sin(clamp((lt - .8 - i * .12) / 2.2) * Math.PI)) * 22; setShip(ottoFleet, i, W3([m[0] + 22 + (i % 4) * 4 - bounce * .0 + (22 - bounce) * .0 + 18 - bounce, m[1] - 6 + Math.floor(i / 4) * 8 + (i % 2) * 3], 0), -1.4 + Math.sin(lt * 4 + i) * .1, SHIP_SCALE, Math.sin(wob + i)); }
+    ottoFleet.hm.instanceMatrix.needsUpdate = ottoFleet.sm.instanceMatrix.needsUpdate = true; chain.material.emissive = new THREE.Color('#ffcf4a'); chain.material.emissiveIntensity = .4 + .4 * Math.sin(lt * 6);
+  } else if (si === 7) {
+    const k = ease(lt / 6.5); const mid = HP[2];
+    camTo(mapCam, mixV(P3([HP[0][0] + 80, HP[0][1] + 110], 24), P3([mid[0] + 30, mid[1] + 90], 18), k), mixV(P3(HP[1], 1), P3(HP[4], 1), k));
+    haulLine.material.opacity = .35 + .25 * Math.sin(lt * 5); logs.visible = true; L.haul.visible = lt > 1.4; L.galata.visible = true; L.haliç.visible = true; L.zincir.visible = true;
+    chain.material.emissiveIntensity = 0;
+  } else if (si === 8) {
+    const k = ease(lt / 5.3); const c = breachPx;
+    camTo(mapCam, mixV(P3([c[0] - 150, c[1] + 160], 40), P3([c[0] - 60, c[1] + 120], 26), k), mixV(P3([c[0] + 20, c[1]], 0), P3([c[0] + 90, c[1] - 20], 0), k));
+    om.uShow.value = 1; om.uMarch.value = 1; dm.uShow.value = 1;
+    om.uAssault.value = clamp((t - BREACH + .3) / 2.4); dm.uFade.value = clamp((t - BREACH + .6) / 2.2) * 1.0 + .0;
+    L.lycus.visible = true;
+    if (t > BREACH) { const fade = clamp((t - BREACH) / .6); landWall.segs.forEach((s, i) => { const pm = s.position; const d = Math.hypot(pm.x - wx(breachPx[0]), pm.z - wz(breachPx[1])); s.scale.y = d < 3 ? lerp(1, .25, fade) : 1; }); }
+  } else if (si === 9) {
+    const k = ease(lt / 5); camTo(mapCam, mixV(P3([cityC[0] - 40, cityC[1] + 260], 60), P3([cityC[0] - 20, cityC[1] + 320], 90), k), P3([cityC[0], cityC[1] - 60], 0));
+    om.uShow.value = 1; om.uMarch.value = 1; om.uAssault.value = 1; dm.uShow.value = 1; dm.uFade.value = 1; L.city.visible = t < PRESS - 1.5;
+    btn.visible = t > PRESS - 1.4;
+    const bk = back((t - PRESS + 1.4) / .5); btn.scale.setScalar(Math.max(.001, bk) * .85);
+    const pressed = t > PRESS; bm.material.color.set(pressed ? '#3a3a3a' : '#e5161b'); bt1.visible = !pressed; bt2.visible = pressed;
+    btn.scale.z *= pressed ? 1 - .2 * Math.exp(-(t - PRESS) * 12) : 1;
+    const ring = pressed && t > PRESS + .45 ? Math.exp(-(t - PRESS - .45) * 2.5) : 0; bell.rotation.z = Math.sin((t - PRESS) * 22) * .5 * ring;
+    const ck = ease((t - PRESS + 1.0) / .7); cursor.position.set(lerp(5, .6, ck), lerp(-5, -.6, ck), .9 - (t > PRESS - .06 && t < PRESS + .05 ? .2 : 0)); if (t > PRESS + .6) cursor.position.lerp(new THREE.Vector3(3.2, -2.2, .9), ease((t - PRESS - .6) / .5));
+    for (let i = 0; i < 140; i++) { const kk = t - PRESS; if (kk < 0) { tmpM.makeScale(0, 0, 0); conf.setMatrixAt(i, tmpM); continue; } const a = hash(i) * 6.28, sp = 4 + hash(i * 3) * 6, up = 4 + hash(i * 5) * 6;
+      tmpM.makeRotationFromEuler(new THREE.Euler(kk * 6 + i, kk * 5, kk * 3)); tmpM.setPosition(Math.cos(a) * sp * kk * .6, up * kk - 7 * kk * kk, Math.sin(a) * sp * kk * .3 + 1); conf.setMatrixAt(i, tmpM); }
+    conf.instanceMatrix.needsUpdate = true;
+  }
+  if (si !== 8 && si !== 9) landWall.segs.forEach(s => s.scale.y = 1);
+  rp.scene = scene; rp.camera = cam;
+  // overlay
+  const c = CAPS.find(c => t >= c[0] - .05 && t < c[1]);
+  if (c) { if (c !== lastCap) { capEl.innerHTML = fmt(c[2]); capBox.className = c[3] || ''; lastCap = c; } const k = t - c[0]; capEl.style.transform = `scale(${lerp(.7, 1, back(k / .25))})`; capEl.style.opacity = clamp(k / .1) * clamp((c[1] - t) / .12 + .2); }
+  else { capEl.style.opacity = 0; }
+  if (si === 9) capBox.style.top = '520px'; else if (!c || !c[3]) capBox.style.top = '1230px'; else capBox.style.top = '';
+  const d = DATES.find(d => t >= d[0] && t < d[1]); if (d && d[2] !== lastDate) { dateEl.innerHTML = d[2] ? `${d[2]}<small>İSTANBUL'UN FETHİ</small>` : ''; lastDate = d[2]; }
+  dateEl.style.opacity = d && d[2] ? clamp((t - d[0]) / .4) : 0;
+  const showArmy = si === 4 || (si === 5 && t >= FIRE - .9) || si === 8;
+  legend.style.opacity = showArmy ? 1 : 0;
+  scaleEl.style.opacity = (si === 1 || si === 4 || si === 8) ? 1 : 0;
+  if (si === 4) { const n1 = 65000 * clamp(lt / 4.5), n2 = 7000 * clamp((lt - 4.8) / .6); counter.style.opacity = 1; counter.innerHTML = `<div class="n r">${nf(n1)}</div><div class="s">GÖSTERİLEN · TAHMİN 50–80 BİN</div><div class="n b" style="margin-top:14px">${nf(n2)}</div><div class="s">SAVUNMACI (≈7.000)</div>`; }
+  else counter.style.opacity = 0;
+  srcEl.style.opacity = si === 9 && t < PRESS - 1.5 ? 1 : 0;
+  // 1 km ölçek çubuğu: kamera uzaklığına göre piksel genişliği
+  if (scaleEl.style.opacity === '1' && scene === map) { const a = mapCam.position.clone(); const tgt = new THREE.Vector3(); mapCam.getWorldDirection(tgt); const p0 = a.clone().add(tgt.multiplyScalar(a.y / Math.max(.2, -tgt.y))); const p1 = p0.clone().add(new THREE.Vector3(10, 0, 0)); const s0 = p0.clone().project(mapCam), s1 = p1.clone().project(mapCam); scaleEl.querySelector('div').style.width = Math.min(500, Math.abs(s1.x - s0.x) * W / 2) + 'px'; }
+  const fl = Math.max(t < 1 ? Math.exp(-Math.abs(t - .55) * 8) * .5 : 0, t > FIRE && t < FIRE + .5 ? Math.exp(-(t - FIRE) * 9) * .35 : 0, t > BREACH ? Math.exp(-(t - BREACH) * 6) * .45 : 0, t > PRESS ? Math.exp(-(t - PRESS) * 9) * .4 : 0);
+  flashEl.style.opacity = fl;
+  let tr = 0; for (let i = 1; i < S.length; i++) tr = Math.max(tr, Math.exp(-Math.abs(t - S[i]) * 10));
+  grade.uniforms.time.value = t; grade.uniforms.fl.value = -tr * .35 * 0 + (t > TL.total - 1.2 ? -clamp((t - TL.total + 1.2) / 1.0) : 0);
+  composer.render();
+};
+window.READY = true;
+</script></body></html>
